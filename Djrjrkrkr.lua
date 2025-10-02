@@ -305,7 +305,7 @@ do
                 task.wait(0.5)
             end
 
-            if setfflag then setfflag("WorldStepMax", "-9999999999") end
+            if setfflag then setfflag("WorldStepMax", "-9999999999999") end
             task.wait(0.2)
             useItemRemote:FireServer()
             task.wait(1)
