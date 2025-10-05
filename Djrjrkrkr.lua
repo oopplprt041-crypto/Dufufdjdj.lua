@@ -4,16 +4,24 @@
 --// ===============================
 
 -- =================================
--- Teleguiado (Rainbow GUI + Text Gradient + Draggable)
+-- Teleguiado (Fly + Smart Avoid + Strong Escape + Camera Assist Control)
 -- =================================
 do
     local Players = game:GetService("Players")
     local LocalPlayer = Players.LocalPlayer
     local RunService = game:GetService("RunService")
+    local Workspace = game:GetService("Workspace")
 
     local guidedOn = false
     local guidedConn
-    local savedPos -- พิกัดที่บันทึกไว้
+    local coilLoop
+    local savedPos
+    local offsetY = 9
+    local flySpeed = 27
+    local lastPos = nil
+    local stuckTimer = 0
+    local spinning = false
+    local cameraInfluence = 0.4 -- 40% ควบคุมด้วยกล้อง
 
     -- GUI
     local screenGui = Instance.new("ScreenGui")
@@ -21,99 +29,166 @@ do
     screenGui.ResetOnSpawn = false
     screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-    local fpsButton = Instance.new("TextButton")
-    fpsButton.Size = UDim2.new(0, 160, 0, 40)
-    fpsButton.Position = UDim2.new(0.5, -80, 0.5, -20) -- กลางจอ
-    fpsButton.Text = "ลอยไปหาผัวลิต"
-    fpsButton.Font = Enum.Font.SourceSansBold
-    fpsButton.TextSize = 18
-    fpsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-    fpsButton.TextStrokeTransparency = 1
-    fpsButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40) -- เทาเข้มไว้รองสีรุ้ง
-    fpsButton.AutoButtonColor = false
-    fpsButton.Parent = screenGui
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0,200,0,100)
+    frame.Position = UDim2.new(0.5,-100,0.5,-50)
+    frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+    frame.Active = true
+    frame.Draggable = true
+    frame.Parent = screenGui
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0,12)
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = fpsButton
+    local layout = Instance.new("UIListLayout", frame)
+    layout.Padding = UDim.new(0,6)
+    layout.VerticalAlignment = Enum.VerticalAlignment.Center
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 2
-    stroke.Parent = fpsButton
+    local saveButton = Instance.new("TextButton", frame)
+    saveButton.Size = UDim2.new(0,180,0,40)
+    saveButton.Text = "บันทึกผัวลิต"
+    saveButton.Font = Enum.Font.SourceSansBold
+    saveButton.TextSize = 18
+    saveButton.TextColor3 = Color3.new(1,1,1)
+    saveButton.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    saveButton.AutoButtonColor = false
+    Instance.new("UICorner", saveButton).CornerRadius = UDim.new(0,8)
 
-    -- ✅ Gradient ฟังก์ชันทำรุ้งไล่สี
-    local function makeRainbow(target)
-        local g = Instance.new("UIGradient")
-        g.Color = ColorSequence.new{
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(255,0,0)),     -- แดง
-            ColorSequenceKeypoint.new(0.16, Color3.fromRGB(255,127,0)),-- ส้ม
-            ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255,255,0)),-- เหลือง
-            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0,255,0)),   -- เขียว
-            ColorSequenceKeypoint.new(0.66, Color3.fromRGB(0,0,255)),  -- น้ำเงิน
-            ColorSequenceKeypoint.new(0.83, Color3.fromRGB(75,0,130)), -- ม่วงคราม
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(148,0,211))    -- ม่วง
-        }
-        g.Rotation = 0
-        g.Parent = target
+    local flyButton = Instance.new("TextButton", frame)
+    flyButton.Size = UDim2.new(0,180,0,40)
+    flyButton.Text = "ลอยไปหาผัวลิต ปิดอยู่"
+    flyButton.Font = Enum.Font.SourceSansBold
+    flyButton.TextSize = 18
+    flyButton.TextColor3 = Color3.new(1,1,1)
+    flyButton.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    flyButton.AutoButtonColor = false
+    Instance.new("UICorner", flyButton).CornerRadius = UDim.new(0,8)
 
-        -- ทำให้สีวิ่งเรื่อยๆ
-        task.spawn(function()
-            while g.Parent do
-                for i = 0, 360, 1 do
-                    g.Rotation = i
-                    task.wait(0.03)
-                end
-            end
-        end)
-        return g
+    local function forceEquipItem(name)
+        local char = LocalPlayer.Character
+        if not char then return end
+        local backpack = LocalPlayer:FindFirstChild("Backpack")
+        if backpack then
+            local tool = backpack:FindFirstChild(name)
+            if tool then tool.Parent = char end
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local toolInChar = char:FindFirstChild(name)
+        if hum and toolInChar then hum:EquipTool(toolInChar) end
     end
 
-    -- ✅ ใส่สีรุ้งทั้งปุ่ม / ขอบ / ตัวอักษร
-    makeRainbow(fpsButton)
-    makeRainbow(stroke)
-    makeRainbow(fpsButton:FindFirstChild("TextLabel") or fpsButton)
+    local function checkObstacle(hrp, dir)
+        local params = RaycastParams.new()
+        params.FilterDescendantsInstances = {LocalPlayer.Character}
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        local result = Workspace:Raycast(hrp.Position, dir * 6, params)
+        return (result and result.Instance) and true or false
+    end
 
-    -- ✅ ทำให้ลากได้
-    fpsButton.Active = true
-    fpsButton.Draggable = true
+    local function spinAndSearch(hrp)
+        spinning = true
+        local startTime = tick()
+        while tick() - startTime < 1.2 do
+            local angle = (tick() * 6) % (2 * math.pi)
+            local dir = Vector3.new(math.cos(angle), 0, math.sin(angle))
+            hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + dir)
+            if not checkObstacle(hrp, dir) then
+                spinning = false
+                return dir
+            end
+            RunService.RenderStepped:Wait()
+        end
+        spinning = false
+        return nil
+    end
 
-    -- ✅ บันทึกพิกัดทันทีที่รันสคริปต์
-    task.defer(function()
-        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-        local hrp = char:WaitForChild("HumanoidRootPart")
-        savedPos = hrp.Position
-    end)
+    local function emergencyPhaseOut(hrp)
+        local randomDir = Vector3.new(math.random(-100,100)/100, 0, math.random(-100,100)/100).Unit
+        local startPos = hrp.Position
+        local pushPower = 3.5
+        for i = 1, 20 do
+            local newPos = startPos + randomDir * pushPower
+            hrp.CFrame = hrp.CFrame:Lerp(CFrame.new(newPos), 0.6)
+            RunService.RenderStepped:Wait()
+        end
+    end
 
-    -- ฟังก์ชันหลัก
-    fpsButton.MouseButton1Click:Connect(function()
+    local function tryUnstuck(hrp)
+        local escapeDir = spinAndSearch(hrp)
+        if escapeDir then return escapeDir end
+        emergencyPhaseOut(hrp)
+        return (-hrp.CFrame.LookVector).Unit
+    end
+
+    flyButton.MouseButton1Click:Connect(function()
         local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
         local hum = char:FindFirstChildOfClass("Humanoid")
         local hrp = char:FindFirstChild("HumanoidRootPart")
+
         guidedOn = not guidedOn
+        flyButton.Text = guidedOn and "ลอยไปหาผัวลิต เปิดอยู่" or "ลอยไปหาผัวลิต ปิดอยู่"
 
         if guidedOn and hum and hrp and savedPos then
-            guidedConn = RunService.RenderStepped:Connect(function()
+            if coilLoop then coilLoop:Disconnect() end
+            coilLoop = RunService.Heartbeat:Connect(function()
+                forceEquipItem("Speed Coil")
+            end)
+
+            lastPos = hrp.Position
+
+            guidedConn = RunService.RenderStepped:Connect(function(dt)
                 if guidedOn and hrp and hum then
-                    local cam = workspace.CurrentCamera
-                    local toTarget = (savedPos - hrp.Position)
+                    local targetPos = Vector3.new(savedPos.X, savedPos.Y + offsetY, savedPos.Z)
+                    local toTarget = (targetPos - hrp.Position)
+                    local dir = toTarget.Unit
+
+                    local cam = Workspace.CurrentCamera
+                    if cam and not spinning then
+                        local camDir = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
+                        dir = (dir * (1 - cameraInfluence) + camDir * cameraInfluence).Unit
+                    end
+
+                    if checkObstacle(hrp, dir) then
+                        dir = (-hrp.CFrame.RightVector).Unit
+                    end
+
+                    if (hrp.Position - lastPos).Magnitude < 0.5 then
+                        stuckTimer += dt
+                        if stuckTimer > 1 then
+                            dir = tryUnstuck(hrp)
+                            stuckTimer = 0
+                        end
+                    else
+                        stuckTimer = 0
+                    end
+                    lastPos = hrp.Position
 
                     if toTarget.Magnitude > 3 then
-                        local camDir = cam.CFrame.LookVector
-                        local blendDir = (toTarget.Unit + camDir).Unit
-                        hum:Move(blendDir, true)
-                        hrp.Velocity = blendDir * 27
+                        hrp.Velocity = dir * flySpeed
+                        hum:Move(Vector3.zero)
                     else
-                        hum:Move(Vector3.new(0,0,0))
-                        hrp.Velocity = Vector3.new(0,0,0)
+                        guidedOn = false
+                        flyButton.Text = "ลอยไปหาผัวลิต ปิดอยู่"
+                        hrp.Velocity = Vector3.zero
+                        hum:Move(Vector3.zero)
+                        if guidedConn then guidedConn:Disconnect(); guidedConn = nil end
+                        if coilLoop then coilLoop:Disconnect(); coilLoop = nil end
                     end
                 end
             end)
         else
-            if guidedConn then guidedConn:Disconnect() guidedConn = nil end
-            if hum then hum:Move(Vector3.new(0,0,0)) end
+            if guidedConn then guidedConn:Disconnect(); guidedConn = nil end
+            if coilLoop then coilLoop:Disconnect(); coilLoop = nil end
         end
     end)
+
+    saveButton.MouseButton1Click:Connect(function()
+        local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        savedPos = char:WaitForChild("HumanoidRootPart").Position
+        saveButton.Text = "บันทึกผัวลิต👉👌"
+        task.delay(1.5, function() saveButton.Text = "บันทึกผัวลิต" end)
+    end)
 end
+
 
 -- =================================
 -- ExtraUI (Float / AirWalk / Desync Panel)
@@ -124,7 +199,6 @@ do
     local RunService = game:GetService("RunService")
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-    -- GUI ใหม่
     local screenGui2 = Instance.new("ScreenGui")
     screenGui2.Name = "ExtraUI"
     screenGui2.ResetOnSpawn = false
@@ -195,16 +269,10 @@ do
     layout2.Parent = frame2
 
     ---------------------------------------------------
-    -- ฟังก์ชัน Float / AirWalk
+    -- ฟังก์ชัน Float / AirWalk / Desync
     ---------------------------------------------------
-    local HRP = nil
-    local floating = false
-    local floatConn = nil
-    local floatSpeed = 30
-
-    local airMode = false
-    local airConn = nil
-    local fallSpeed = -2
+    local HRP, floating, floatConn, floatSpeed = nil, false, nil, 30
+    local airMode, airConn, fallSpeed = false, nil, -2
 
     local function Float(state)
         HRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -212,9 +280,7 @@ do
         if state and not floating then
             floating = true
             floatConn = RunService.Heartbeat:Connect(function()
-                if floating and HRP then
-                    HRP.Velocity = Vector3.new(HRP.Velocity.X, floatSpeed, HRP.Velocity.Z)
-                end
+                if floating and HRP then HRP.Velocity = Vector3.new(HRP.Velocity.X, floatSpeed, HRP.Velocity.Z) end
             end)
         else
             floating = false
@@ -228,9 +294,7 @@ do
         if state and not airMode then
             airMode = true
             airConn = RunService.Heartbeat:Connect(function()
-                if HRP and airMode then
-                    HRP.Velocity = Vector3.new(HRP.Velocity.X, fallSpeed, HRP.Velocity.Z)
-                end
+                if HRP and airMode then HRP.Velocity = Vector3.new(HRP.Velocity.X, fallSpeed, HRP.Velocity.Z) end
             end)
         else
             airMode = false
@@ -239,7 +303,7 @@ do
     end
 
     ---------------------------------------------------
-    -- ฟังก์ชันสร้างปุ่ม
+    -- สร้างปุ่ม
     ---------------------------------------------------
     local function createButton2(name)
         local button = Instance.new("TextButton")
@@ -250,45 +314,36 @@ do
         button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
         button.AutoButtonColor = true
         button.TextColor3 = Color3.new(1,1,1)
-
-        local corner = Instance.new("UICorner")
+        local corner = Instance.new("UICorner", button)
         corner.CornerRadius = UDim.new(0, 6)
-        corner.Parent = button
-
-        local gradient = Instance.new("UIGradient")
+        local gradient = Instance.new("UIGradient", button)
         gradient.Color = strokeGradient.Color
-        gradient.Parent = button
-
         task.spawn(function()
-            while task.wait(0.05) do
-                gradient.Rotation = (gradient.Rotation + 2) % 360
-            end
+            while task.wait(0.05) do gradient.Rotation = (gradient.Rotation + 2) % 360 end
         end)
-
         button.Parent = frame2
         return button
     end
 
     ---------------------------------------------------
-    -- ปุ่ม Desync
+    -- ปุ่ม Desync / Float / AirWalk
     ---------------------------------------------------
     local desyncButton = createButton2("ผัวเลียวานลิตโหดๆ")
+    local floatBtn = createButton2("ผัวเลียวานลิต")
+    local airBtn = createButton2("ผัวเลียวานลิฟ")
 
     local function enableMobileDesync()
         local success, error = pcall(function()
             local backpack = LocalPlayer:WaitForChild("Backpack")
             local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
             local humanoid = character:WaitForChild("Humanoid")
-
             local packages = ReplicatedStorage:WaitForChild("Packages", 5)
             if not packages then return end
             local netFolder = packages:WaitForChild("Net", 5)
             if not netFolder then return end
-
             local useItemRemote = netFolder:WaitForChild("RE/UseItem", 5)
             local teleportRemote = netFolder:WaitForChild("RE/QuantumCloner/OnTeleport", 5)
             if not useItemRemote or not teleportRemote then return end
-
             local toolNames = {"Quantum Cloner", "Brainrot", "brainrot"}
             local tool
             for _, toolName in ipairs(toolNames) do
@@ -300,12 +355,8 @@ do
                     if item:IsA("Tool") then tool=item break end
                 end
             end
-            if tool and tool.Parent==backpack then
-                humanoid:EquipTool(tool)
-                task.wait(0.5)
-            end
-
-            if setfflag then setfflag("WorldStepMax", "-9999999999999") end
+            if tool and tool.Parent==backpack then humanoid:EquipTool(tool) task.wait(0.5) end
+            if setfflag then setfflag("WorldStepMax", "-9999999999") end
             task.wait(0.2)
             useItemRemote:FireServer()
             task.wait(1)
@@ -314,48 +365,22 @@ do
             if setfflag then setfflag("WorldStepMax", "-1") end
             print("✅ Mobile Desync ativado!")
         end)
-        if not success then
-            warn("❌ Erro ao ativar desync: " .. tostring(error))
-        end
+        if not success then warn("❌ Erro ao ativar desync: " .. tostring(error)) end
     end
 
     desyncButton.MouseButton1Click:Connect(function()
         enableMobileDesync()
         desyncButton.BackgroundColor3 = Color3.fromRGB(200,200,0)
-        task.delay(1, function()
-            desyncButton.BackgroundColor3 = Color3.fromRGB(60,60,60)
-        end)
+        task.delay(1, function() desyncButton.BackgroundColor3 = Color3.fromRGB(60,60,60) end)
     end)
 
-    ---------------------------------------------------
-    -- ปุ่ม Float
-    ---------------------------------------------------
-    local floatBtn = createButton2("ผัวเลียวานลิต")
     floatBtn.MouseButton1Click:Connect(function()
-        if not floating then
-            Float(true)
-            floatBtn.Text = "ผัวหยุดเลียวานลิต"
-            floatBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
-        else
-            Float(false)
-            floatBtn.Text = "ผัวเลียวานลิต"
-            floatBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        end
+        if not floating then Float(true) floatBtn.Text="ผัวหยุดเลียวานลิต" floatBtn.BackgroundColor3=Color3.fromRGB(170,0,0)
+        else Float(false) floatBtn.Text="ผัวเลียวานลิต" floatBtn.BackgroundColor3=Color3.fromRGB(60,60,60) end
     end)
 
-    ---------------------------------------------------
-    -- ปุ่ม AirWalk
-    ---------------------------------------------------
-    local airBtn = createButton2("ผัวเลียวานลิฟ")
     airBtn.MouseButton1Click:Connect(function()
-        if not airMode then
-            AirWalk(true)
-            airBtn.Text = "ผัวหยุดเลียวายลิฟ"
-            airBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
-        else
-            AirWalk(false)
-            airBtn.Text = "ผัวเลียวานลิฟ"
-            airBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        end
+        if not airMode then AirWalk(true) airBtn.Text="ผัวหยุดเลียวายลิฟ" airBtn.BackgroundColor3=Color3.fromRGB(170,0,0)
+        else AirWalk(false) airBtn.Text="ผัวเลียวานลิฟ" airBtn.BackgroundColor3=Color3.fromRGB(60,60,60) end
     end)
 end
